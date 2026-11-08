@@ -15,6 +15,9 @@
 // The wheel (or only a pinch, with `scrollZoom` off), two fingers on a touch
 // screen and the + / − bar zoom about the cursor, the fingers or the centre;
 // the canvas is marked so bb's own finger swipes (its sidebar) leave it alone.
+// Full screen draws the graph over the whole window (a portal to the body, so
+// no layout of bb's can clip it); a first tap there lights a memory and its
+// links, a second leaves full screen and opens it. Escape leaves it too.
 // Dragging the background pans, and dragging a
 // node moves it and pins it there (a dot marks it); double-clicking a pinned
 // node releases it, and Release releases them all. With a `pinKey`, pins
@@ -25,6 +28,8 @@
 // light or dark theme through its CSS variables.
 import { useCallback, useEffect, useLayoutEffect, useMemo, useReducer, useRef, useState } from "react";
 import type { MouseEvent as ReactMouseEvent, PointerEvent as ReactPointerEvent, RefObject } from "react";
+import { createPortal } from "react-dom";
+import { experimental_usePluginId } from "@get-bb/plugin-sdk/app";
 import {
   EDGE_LABEL_HEIGHT,
   arrowHead,
@@ -93,10 +98,9 @@ function readTheme(host: HTMLElement): Theme {
 }
 
 /** The host's colours, read again when its theme or the system's colour scheme changes. */
-function useTheme(ref: RefObject<HTMLElement | null>): Theme | null {
+function useTheme(host: HTMLElement | null): Theme | null {
   const [theme, setTheme] = useState<Theme | null>(null);
   useLayoutEffect(() => {
-    const host = ref.current;
     if (host === null) return;
     const read = () => {
       const next = readTheme(host);
@@ -128,23 +132,40 @@ function useTheme(ref: RefObject<HTMLElement | null>): Theme | null {
       scheme.removeEventListener("change", update);
       observer.disconnect();
     };
-  }, [ref]);
+  }, [host]);
   return theme;
 }
 
 /** The element's inner width in pixels, kept current. */
-function useWidth(ref: RefObject<HTMLElement | null>): number {
+function useWidth(element: HTMLElement | null): number {
   const [width, setWidth] = useState(0);
   useLayoutEffect(() => {
-    const element = ref.current;
     if (element === null) return;
     const measure = () => setWidth(Math.floor(element.clientWidth));
     measure();
     const observer = new ResizeObserver(measure);
     observer.observe(element);
     return () => observer.disconnect();
-  }, [ref]);
+  }, [element]);
   return width;
+}
+
+/** The height of what the screen shows, kept current while `active`. */
+function useViewportHeight(active: boolean): number {
+  const [height, setHeight] = useState(0);
+  useLayoutEffect(() => {
+    if (!active) return;
+    const viewport = window.visualViewport;
+    const read = () => setHeight(Math.round(viewport?.height ?? window.innerHeight));
+    read();
+    window.addEventListener("resize", read);
+    viewport?.addEventListener("resize", read);
+    return () => {
+      window.removeEventListener("resize", read);
+      viewport?.removeEventListener("resize", read);
+    };
+  }, [active]);
+  return height;
 }
 
 /**
@@ -153,13 +174,12 @@ function useWidth(ref: RefObject<HTMLElement | null>): number {
  * page. Measured where the element sits when fully in, whatever its slide.
  */
 function useCoverRight(
-  frameRef: RefObject<HTMLElement | null>,
+  frame: HTMLElement | null,
   coverRef: RefObject<HTMLElement | null> | undefined,
   covered: boolean,
 ): number {
   const [cover, setCover] = useState(0);
   useLayoutEffect(() => {
-    const frame = frameRef.current;
     const element = coverRef?.current ?? null;
     if (!covered || frame === null || element === null) {
       setCover(0);
@@ -177,7 +197,7 @@ function useCoverRight(
     observer.observe(frame);
     observer.observe(element);
     return () => observer.disconnect();
-  }, [frameRef, coverRef, covered]);
+  }, [frame, coverRef, covered]);
   return cover;
 }
 
@@ -220,6 +240,8 @@ const DRAG_SLOP = 4;
 const ZOOM_STEP = 1.3;
 /** The strip along the bottom, in pixels, that holds the zoom bar: the fitted drawing keeps clear of it. */
 const CONTROL_STRIP = 48;
+/** The strip along the top, in pixels, that holds the hint in full screen: the fitted drawing keeps clear of it too. */
+const HINT_STRIP = 40;
 /**
  * Layout gap kept between linked nodes beyond their radii. Measured on the
  * real memory graph (110 nodes, 185 links, 1000×600 canvas): 25 overlapping
@@ -297,8 +319,26 @@ export function GraphView({
   coverRef,
   covered = false,
 }: GraphViewProps) {
-  const frameRef = useRef<HTMLDivElement>(null);
-  const canvasRef = useRef<HTMLCanvasElement>(null);
+  const frameRef = useRef<HTMLDivElement | null>(null);
+  const canvasRef = useRef<HTMLCanvasElement | null>(null);
+  // The frame and canvas as elements too: full screen moves them, and what watches them follows.
+  const [frameEl, setFrameEl] = useState<HTMLDivElement | null>(null);
+  const [canvasEl, setCanvasEl] = useState<HTMLCanvasElement | null>(null);
+  const attachFrame = useCallback((element: HTMLDivElement | null) => {
+    frameRef.current = element;
+    setFrameEl(element);
+  }, []);
+  const attachCanvas = useCallback((element: HTMLCanvasElement | null) => {
+    canvasRef.current = element;
+    setCanvasEl(element);
+  }, []);
+  // Full screen: the graph covers the whole window. A first tap on a memory
+  // there lights it and its links (`tapped`); a second tap opens it.
+  const [expanded, setExpanded] = useState(false);
+  // bb scopes a plugin's CSS to its own roots: the full-screen frame, portalled to the body, marks itself as one.
+  const pluginId = experimental_usePluginId();
+  const [tapped, setTapped] = useState<string | null>(null);
+  const viewportHeight = useViewportHeight(expanded);
   const tipRef = useRef<HTMLDivElement>(null);
   // The hovered node; changing it redraws without a render.
   const hoverRef = useRef<string | null>(null);
@@ -310,12 +350,14 @@ export function GraphView({
   // Pointers down on the canvas, by id: a second finger turns a press into a pinch.
   const downRef = useRef(new Map<number, Point>());
   const pinchRef = useRef<{ ids: [number, number]; a: Point; b: Point; view: View } | null>(null);
-  const width = useWidth(frameRef);
-  const theme = useTheme(frameRef);
+  const width = useWidth(frameEl);
+  const theme = useTheme(frameEl);
   // The canvas pixels on the right hidden under the cover, and the width still showing.
-  const coverRight = useCoverRight(frameRef, coverRef, covered);
+  // Full screen is above every cover.
+  const coverRight = useCoverRight(frameEl, coverRef, covered && !expanded);
   const shownWidth = Math.max(0, width - coverRight);
-  const canvasHeight = height ?? (width < 520 ? 360 : 440);
+  const inlineHeight = height ?? (width < 520 ? 360 : 440);
+  const canvasHeight = expanded ? Math.max(240, viewportHeight) : inlineHeight;
   // Bumped when an icon loads or the pins change, to draw again.
   const [, redraw] = useReducer((n: number) => n + 1, 0);
 
@@ -372,7 +414,11 @@ export function GraphView({
   }, [shown]);
   // The zoom bar sits in a strip along the bottom, which the fitted drawing keeps clear of.
   const fitHeight = controls ? canvasHeight - CONTROL_STRIP : canvasHeight;
-  const fit = useMemo(() => fitView(points, width, fitHeight), [points, width, fitHeight]);
+  const hintStrip = expanded ? HINT_STRIP : 0;
+  const fit = useMemo(() => {
+    const view = fitView(points, width, fitHeight - hintStrip);
+    return { ...view, oy: view.oy + hintStrip };
+  }, [points, width, fitHeight, hintStrip]);
   // The user's camera; null follows the fitted view.
   const [camera, setCamera] = useState<View | null>(null);
   useEffect(() => setCamera(null), [fit]);
@@ -397,7 +443,7 @@ export function GraphView({
   );
   // A selected node the cover hides, or one off the canvas, is panned to the middle of what shows.
   useEffect(() => {
-    if (selected === null || shownWidth < 160) return;
+    if (expanded || selected === null || shownWidth < 160) return;
     const node = placed().find((p) => p.name === selected);
     if (node === undefined) return;
     const margin = 20;
@@ -433,7 +479,8 @@ export function GraphView({
     const drawn = placed();
     const at = new Map(drawn.map((p) => [p.name, p]));
     const hover = hoverRef.current !== null && byName.has(hoverRef.current) ? hoverRef.current : null;
-    const focus = selected !== null && byName.has(selected) ? selected : hover;
+    const chosen = expanded ? tapped : selected;
+    const focus = chosen !== null && byName.has(chosen) ? chosen : hover;
     // What stands out: the focus and its neighbours, else the search matches, else everything.
     const lit = focus === null ? highlight : new Set([focus, ...(neighbours.get(focus) ?? [])]);
 
@@ -652,14 +699,16 @@ export function GraphView({
   // The wheel zooms about the cursor; React's onWheel is passive, so this listener is added by hand.
   const zoomRef = useRef<(factor: number, x: number, y: number) => void>(() => {});
   zoomRef.current = (factor, x, y) => setCamera((current) => zoomView(current ?? fit, fit, factor, x, y));
+  // Full screen has nothing behind it to scroll: there the wheel always zooms.
+  const wheelZooms = scrollZoom || expanded;
   useEffect(() => {
-    const canvas = canvasRef.current;
+    const canvas = canvasEl;
     if (canvas === null) return;
     const onWheel = (event: WheelEvent) => {
       // A trackpad pinch arrives as the wheel with Ctrl held, in small steps.
       const pinch = event.ctrlKey || event.metaKey;
       // Without scroll zoom, the wheel scrolls whatever holds the graph.
-      if (!scrollZoom && !pinch) return;
+      if (!wheelZooms && !pinch) return;
       event.preventDefault();
       const rect = canvas.getBoundingClientRect();
       const delta = event.deltaMode === 1 ? event.deltaY * 16 : event.deltaY;
@@ -671,7 +720,44 @@ export function GraphView({
     };
     canvas.addEventListener("wheel", onWheel, { passive: false });
     return () => canvas.removeEventListener("wheel", onWheel);
-  }, [scrollZoom]);
+  }, [wheelZooms, canvasEl]);
+
+  useEffect(() => {
+    if (!expanded) return;
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key !== "Escape") return;
+      event.preventDefault();
+      event.stopPropagation();
+      setExpanded(false);
+      setTapped(null);
+    };
+    window.addEventListener("keydown", onKey, true);
+    return () => window.removeEventListener("keydown", onKey, true);
+  }, [expanded]);
+
+  function toggleExpanded(): void {
+    setTapped(expanded ? null : selected);
+    setExpanded(!expanded);
+  }
+
+  /**
+   * A click on a node, or on the background (null). Inline it goes to the
+   * page; in full screen the first tap lights the memory and the second leaves
+   * full screen and opens it.
+   */
+  function pick(name: string | null): void {
+    if (!expanded) {
+      onSelect(name === selected ? null : name);
+      return;
+    }
+    if (name !== null && name === tapped) {
+      setExpanded(false);
+      setTapped(null);
+      onSelect(name);
+      return;
+    }
+    setTapped(name);
+  }
 
   function pointer(event: ReactPointerEvent<HTMLCanvasElement>): { x: number; y: number } {
     const rect = event.currentTarget.getBoundingClientRect();
@@ -804,7 +890,7 @@ export function GraphView({
       return;
     }
     const hit = press.kind === "node" ? press.name : null;
-    onSelect(hit === selected ? null : hit);
+    pick(hit);
   }
 
   function onDoubleClick(event: ReactMouseEvent<HTMLCanvasElement>): void {
@@ -827,75 +913,128 @@ export function GraphView({
   const fitToScreen = () =>
     setCamera(coverRight > 0 ? fitView(points, shownWidth, fitHeight) : null);
 
+  // A finger, not a mouse, is the main pointer: the full-screen hint says tap.
+  const touchScreen = typeof window !== "undefined" && window.matchMedia("(pointer: coarse)").matches;
+  // In full screen the graph keeps clear of the notch and the home bar.
+  const edge = (side: "top" | "right" | "bottom" | "left", px: number) =>
+    expanded ? `calc(${px}px + env(safe-area-inset-${side}))` : `${px}px`;
+
+  const frame = (
+    <div
+      ref={attachFrame}
+      className={cn(
+        "overflow-hidden bg-card",
+        expanded
+          ? "fixed inset-0 z-[2147483000] overscroll-none"
+          : "relative rounded-[12px] border border-border",
+      )}
+      role={expanded ? "dialog" : undefined}
+      aria-modal={expanded ? true : undefined}
+      aria-label={expanded ? "Memory graph, full screen" : undefined}
+      // The marks bb gives its own plugin overlays, so this plugin's styles apply outside its page.
+      data-bb-plugin-root={expanded ? "" : undefined}
+      data-bb-plugin={expanded ? pluginId : undefined}
+      data-bb-portaled-overlay={expanded ? "" : undefined}
+      // bb opens its sidebar and side panel on a finger swipe, except where these marks say not to.
+      data-no-sidebar-swipe=""
+      data-no-secondary-panel-swipe=""
+      data-vaul-no-drag=""
+    >
+      <canvas
+        ref={attachCanvas}
+        role="img"
+        aria-label={`Graph of ${nodes.length} memories and ${shown.length} links`}
+        className="block w-full touch-none select-none"
+        style={{ height: canvasHeight, cursor: "grab" }}
+        onPointerDown={onPointerDown}
+        onPointerMove={onPointerMove}
+        onPointerUp={onPointerUp}
+        onPointerCancel={(event) => {
+          if (pinchRef.current !== null) endPinch(event.pointerId);
+          else downRef.current.delete(event.pointerId);
+          pressRef.current = null;
+        }}
+        onPointerLeave={onPointerLeave}
+        onDoubleClick={onDoubleClick}
+      />
+      <div
+        ref={tipRef}
+        aria-hidden
+        className="pointer-events-none absolute left-0 top-0 z-[2] hidden whitespace-nowrap rounded-[6px] border border-border bg-popover px-2 py-1 text-[12px] text-popover-foreground shadow-sm"
+      />
+      {expanded ? (
+        <p
+          className="pointer-events-none absolute inset-x-0 z-[2] flex justify-center px-14"
+          style={{ top: edge("top", 8) }}
+        >
+          <span className="rounded-full border border-border bg-popover/90 px-3 py-1 text-center text-[12px] text-muted-foreground">
+            {touchScreen ? "Tap" : "Click"} a memory to show its links, again to open it
+          </span>
+        </p>
+      ) : null}
+      {controls ? (
+        <div
+          role="group"
+          aria-label="Zoom"
+          className="absolute z-[3] flex items-stretch overflow-hidden rounded-[8px] border border-border bg-popover text-popover-foreground shadow-sm transition-[right] duration-300 ease-[cubic-bezier(0.22,1,0.36,1)] motion-reduce:transition-none"
+          style={{
+            bottom: edge("bottom", 8),
+            right: expanded ? edge("right", 8) : 8 + coverRight,
+          }}
+        >
+          <ZoomButton label="Zoom out" icon={GLYPH.minus} onClick={() => zoomBy(1 / ZOOM_STEP)} />
+          {/* A fixed width, so 25% and 600% leave the buttons where they are. */}
+          <span
+            aria-live="polite"
+            className="flex w-12 shrink-0 items-center justify-center whitespace-nowrap text-[11px] tabular-nums text-muted-foreground"
+          >
+            {Math.round(zoom * 100)}%
+          </span>
+          <ZoomButton label="Zoom in" icon={GLYPH.plus} onClick={() => zoomBy(ZOOM_STEP)} />
+          <span aria-hidden className="w-px bg-border" />
+          <ZoomButton label="Fit to screen" icon={GLYPH.fit} onClick={fitToScreen} />
+          <ZoomButton
+            label={expanded ? "Exit full screen" : "Full screen"}
+            icon={expanded ? GLYPH.collapse : GLYPH.expand}
+            onClick={toggleExpanded}
+          />
+        </div>
+      ) : null}
+      {pinned === 0 ? null : (
+        <button
+          type="button"
+          onClick={() => {
+            for (const p of points) pins.delete(p.name);
+            redraw();
+          }}
+          className={cn(
+            "absolute z-[3] inline-flex h-7 items-center gap-1.5 rounded-[8px] border border-border bg-popover px-2.5 text-[12px] text-popover-foreground shadow-sm transition-colors hover:bg-accent",
+            FOCUS_RING,
+          )}
+          style={{ top: edge("top", 12), left: edge("left", 12) }}
+        >
+          <Icon name="RotateCcw" className="size-3.5" aria-hidden />
+          Release {pinned} pinned
+        </button>
+      )}
+    </div>
+  );
+
   return (
     <div className="flex flex-col gap-2">
-      {/* bb opens its sidebar and side panel on a finger swipe, except where these marks say not to. */}
-      <div
-        ref={frameRef}
-        className="relative overflow-hidden rounded-[12px] border border-border bg-card"
-        data-no-sidebar-swipe=""
-        data-no-secondary-panel-swipe=""
-        data-vaul-no-drag=""
-      >
-        <canvas
-          ref={canvasRef}
-          role="img"
-          aria-label={`Graph of ${nodes.length} memories and ${shown.length} links`}
-          className="block w-full touch-none select-none"
-          style={{ height: canvasHeight, cursor: "grab" }}
-          onPointerDown={onPointerDown}
-          onPointerMove={onPointerMove}
-          onPointerUp={onPointerUp}
-          onPointerCancel={(event) => {
-            if (pinchRef.current !== null) endPinch(event.pointerId);
-            else downRef.current.delete(event.pointerId);
-            pressRef.current = null;
-          }}
-          onPointerLeave={onPointerLeave}
-          onDoubleClick={onDoubleClick}
-        />
-        <div
-          ref={tipRef}
-          aria-hidden
-          className="pointer-events-none absolute left-0 top-0 z-[2] hidden whitespace-nowrap rounded-[6px] border border-border bg-popover px-2 py-1 text-[12px] text-popover-foreground shadow-sm"
-        />
-        {controls ? (
+      {expanded ? (
+        <>
+          {/* Holds the graph's place, so the page does not jump while it is full screen. */}
           <div
-            role="group"
-            aria-label="Zoom"
-            className="absolute bottom-2 z-[3] flex items-stretch overflow-hidden rounded-[8px] border border-border bg-popover text-popover-foreground shadow-sm transition-[right] duration-300 ease-[cubic-bezier(0.22,1,0.36,1)] motion-reduce:transition-none"
-            style={{ right: 8 + coverRight }}
-          >
-            <ZoomButton label="Zoom out" icon={GLYPH.minus} onClick={() => zoomBy(1 / ZOOM_STEP)} />
-            {/* A fixed width, so 25% and 600% leave the buttons where they are. */}
-            <span
-              aria-live="polite"
-              className="flex w-12 shrink-0 items-center justify-center whitespace-nowrap text-[11px] tabular-nums text-muted-foreground"
-            >
-              {Math.round(zoom * 100)}%
-            </span>
-            <ZoomButton label="Zoom in" icon={GLYPH.plus} onClick={() => zoomBy(ZOOM_STEP)} />
-            <span aria-hidden className="w-px bg-border" />
-            <ZoomButton label="Fit to screen" icon={GLYPH.fit} onClick={fitToScreen} />
-          </div>
-        ) : null}
-        {pinned === 0 ? null : (
-          <button
-            type="button"
-            onClick={() => {
-              for (const p of points) pins.delete(p.name);
-              redraw();
-            }}
-            className={cn(
-              "absolute left-3 top-3 z-[3] inline-flex h-7 items-center gap-1.5 rounded-[8px] border border-border bg-popover px-2.5 text-[12px] text-popover-foreground shadow-sm transition-colors hover:bg-accent",
-              FOCUS_RING,
-            )}
-          >
-            <Icon name="RotateCcw" className="size-3.5" aria-hidden />
-            Release {pinned} pinned
-          </button>
-        )}
-      </div>
+            aria-hidden
+            className="rounded-[12px] border border-dashed border-border"
+            style={{ height: inlineHeight + 2 }}
+          />
+          {createPortal(frame, document.body)}
+        </>
+      ) : (
+        frame
+      )}
       {legend ? <Legend nodes={nodes} dark={theme?.dark ?? false} /> : null}
     </div>
   );
@@ -904,7 +1043,11 @@ export function GraphView({
 const GLYPH = {
   plus: "M5 12h14M12 5v14",
   minus: "M5 12h14",
-  fit: "M8 3H5a2 2 0 0 0-2 2v3M21 8V5a2 2 0 0 0-2-2h-3M3 16v3a2 2 0 0 0 2 2h3M16 21h3a2 2 0 0 0 2-2v-3",
+  // Corners round a dot: frame everything. Not the four corners alone, which read as full screen.
+  fit: "M3 7V5a2 2 0 0 1 2-2h2M17 3h2a2 2 0 0 1 2 2v2M21 17v2a2 2 0 0 1-2 2h-2M7 21H5a2 2 0 0 1-2-2v-2M15 12a3 3 0 1 1-6 0a3 3 0 1 1 6 0",
+  // Arrows out to the corners: full screen; arrows in: back.
+  expand: "M15 3h6v6M9 21H3v-6M21 3l-7 7M3 21l7-7",
+  collapse: "M4 14h6v6M20 10h-6V4M14 10l7-7M3 21l7-7",
 } as const;
 
 function ZoomButton({ label, icon, onClick }: { label: string; icon: string; onClick: () => void }) {
