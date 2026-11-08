@@ -38,7 +38,7 @@ const ALL = "all";
 /** The type chips, in order: the entity types, then the other kinds. */
 const TYPE_ORDER: readonly string[] = [...ENTITY_TYPES, ...KIND_TYPES];
 const GRAPH_HINT =
-  "Scroll or use + and − to zoom, drag the background to pan, drag a node to pin it where you drop it, double-click a pinned node to release it. Arrows are relations, labelled with their type when you point at a memory or zoom in; dashed lines are mentions.";
+  "Scroll, pinch or use + and − to zoom, drag the background to pan, drag a node to pin it where you drop it, double-click a pinned node to release it. Arrows are relations, labelled with their type when you point at a memory or zoom in; dashed lines are mentions.";
 /** Pinned graph nodes survive switching tabs under this key. */
 const GRAPH_PIN_KEY = "memory";
 

@@ -28,8 +28,8 @@ A **Memory** page in the sidebar (`/plugins/memory-explorer/memory`):
   open the memory they name; below come the memories that link to it, a small
   graph of its neighbours (pinch or use + and − to zoom it), and for an entity,
   the threads whose title names it and its Notes.
-- **Graph**: every memory and link on a canvas. Scroll or use + and − to zoom,
-  drag the background to pan, drag a node to pin it, double-click a pinned node
+- **Graph**: every memory and link on a canvas. Scroll, pinch (two fingers on
+  a phone) or use + and − to zoom, drag the background to pan, drag a node to pin it, double-click a pinned node
   to release it. A relation is an arrow labelled with its type (`member of`,
   `led to`): the labels show for the memory you point at or open, and for every
   relation once you zoom in or the graph is small. Dashed lines are mentions.

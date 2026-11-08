@@ -12,8 +12,10 @@
 //
 // Interaction: hovering shows a tooltip and lights the node's neighbours; a
 // click selects a node, a second click (or a click on the background) clears.
-// The wheel (or only a pinch, with `scrollZoom` off) and the + / − buttons zoom
-// about the cursor or the centre, dragging the background pans, and dragging a
+// The wheel (or only a pinch, with `scrollZoom` off), two fingers on a touch
+// screen and the + / − bar zoom about the cursor, the fingers or the centre;
+// the canvas is marked so bb's own finger swipes (its sidebar) leave it alone.
+// Dragging the background pans, and dragging a
 // node moves it and pins it there (a dot marks it); double-clicking a pinned
 // node releases it, and Release releases them all. With a `pinKey`, pins
 // survive the graph being unmounted (switching tabs) for as long as the page
@@ -33,12 +35,14 @@ import {
   labelBox,
   layoutGraph,
   nodeAt,
+  pinchView,
   placeEdgeLabels,
   placeLabels,
   toLayout,
   zoomView,
   type EdgePath,
   type PlacedLabel,
+  type Point,
   type View,
 } from "../graph-layout";
 import { ENTITY_TYPES, KIND_TYPES, type GraphEdge, type GraphNode } from "../knowledge";
@@ -214,10 +218,8 @@ const ARROW_WIDTH = 6;
 /** Pointer travel, in pixels, that turns a press into a drag. */
 const DRAG_SLOP = 4;
 const ZOOM_STEP = 1.3;
-/** Below this height the zoom buttons are one row, in a strip the fitted drawing keeps clear of. */
-const COMPACT_HEIGHT = 360;
-/** Height of that strip, in pixels. */
-const CONTROL_STRIP = 40;
+/** The strip along the bottom, in pixels, that holds the zoom bar: the fitted drawing keeps clear of it. */
+const CONTROL_STRIP = 48;
 /**
  * Layout gap kept between linked nodes beyond their radii. Measured on the
  * real memory graph (110 nodes, 185 links, 1000×600 canvas): 25 overlapping
@@ -305,6 +307,9 @@ export function GraphView({
   // The links as last drawn, to find the one under the pointer.
   const drawnEdgesRef = useRef<DrawnEdge[]>([]);
   const pressRef = useRef<Press | null>(null);
+  // Pointers down on the canvas, by id: a second finger turns a press into a pinch.
+  const downRef = useRef(new Map<number, Point>());
+  const pinchRef = useRef<{ ids: [number, number]; a: Point; b: Point; view: View } | null>(null);
   const width = useWidth(frameRef);
   const theme = useTheme(frameRef);
   // The canvas pixels on the right hidden under the cover, and the width still showing.
@@ -365,9 +370,8 @@ export function GraphView({
     }
     return map;
   }, [shown]);
-  // On a short canvas the zoom buttons sit in a strip along the bottom, which the fitted drawing keeps clear of.
-  const compact = controls && canvasHeight < COMPACT_HEIGHT;
-  const fitHeight = compact ? canvasHeight - CONTROL_STRIP : canvasHeight;
+  // The zoom bar sits in a strip along the bottom, which the fitted drawing keeps clear of.
+  const fitHeight = controls ? canvasHeight - CONTROL_STRIP : canvasHeight;
   const fit = useMemo(() => fitView(points, width, fitHeight), [points, width, fitHeight]);
   // The user's camera; null follows the fitted view.
   const [camera, setCamera] = useState<View | null>(null);
@@ -709,16 +713,54 @@ export function GraphView({
   function onPointerDown(event: ReactPointerEvent<HTMLCanvasElement>): void {
     if (event.button !== 0) return;
     const { x, y } = pointer(event);
+    try {
+      event.currentTarget.setPointerCapture(event.pointerId);
+    } catch {
+      // A pointer the browser no longer tracks: nothing to capture.
+    }
+    const down = downRef.current;
+    down.set(event.pointerId, { x, y });
+    if (down.size === 2 && pinchRef.current === null) {
+      // A second finger: the press becomes a pinch, from the view as it is now.
+      const [[idA, a], [idB, b]] = [...down.entries()] as [[number, Point], [number, Point]];
+      pinchRef.current = { ids: [idA, idB], a, b, view };
+      pressRef.current = null;
+      showTip(null, 0, 0);
+      return;
+    }
+    if (down.size > 1) return;
     const hit = hitAt(x, y);
-    event.currentTarget.setPointerCapture(event.pointerId);
     pressRef.current =
       hit === null
         ? { kind: "pan", x, y, view, moved: false }
         : { kind: "node", name: hit, x, y, moved: false };
   }
 
+  /** A pinch ends when one of its fingers lifts; a finger still down carries on panning. */
+  function endPinch(pointerId: number): void {
+    const down = downRef.current;
+    down.delete(pointerId);
+    const pinch = pinchRef.current;
+    if (pinch === null || !pinch.ids.includes(pointerId)) return;
+    pinchRef.current = null;
+    const rest = [...down.values()][0];
+    pressRef.current =
+      rest === undefined ? null : { kind: "pan", x: rest.x, y: rest.y, view, moved: true };
+  }
+
   function onPointerMove(event: ReactPointerEvent<HTMLCanvasElement>): void {
     const { x, y } = pointer(event);
+    const down = downRef.current;
+    if (down.has(event.pointerId)) down.set(event.pointerId, { x, y });
+    const pinch = pinchRef.current;
+    if (pinch !== null) {
+      const a = down.get(pinch.ids[0]);
+      const b = down.get(pinch.ids[1]);
+      if (a !== undefined && b !== undefined) {
+        setCamera(pinchView(pinch.view, fit, pinch.a, pinch.b, a, b));
+      }
+      return;
+    }
     const press = pressRef.current;
     if (press !== null) {
       if (!press.moved && Math.hypot(x - press.x, y - press.y) < DRAG_SLOP) return;
@@ -748,6 +790,11 @@ export function GraphView({
   }
 
   function onPointerUp(event: ReactPointerEvent<HTMLCanvasElement>): void {
+    if (pinchRef.current !== null) {
+      endPinch(event.pointerId);
+      return;
+    }
+    downRef.current.delete(event.pointerId);
     const press = pressRef.current;
     pressRef.current = null;
     if (press === null) return;
@@ -782,7 +829,14 @@ export function GraphView({
 
   return (
     <div className="flex flex-col gap-2">
-      <div ref={frameRef} className="relative overflow-hidden rounded-[12px] border border-border bg-card">
+      {/* bb opens its sidebar and side panel on a finger swipe, except where these marks say not to. */}
+      <div
+        ref={frameRef}
+        className="relative overflow-hidden rounded-[12px] border border-border bg-card"
+        data-no-sidebar-swipe=""
+        data-no-secondary-panel-swipe=""
+        data-vaul-no-drag=""
+      >
         <canvas
           ref={canvasRef}
           role="img"
@@ -792,7 +846,11 @@ export function GraphView({
           onPointerDown={onPointerDown}
           onPointerMove={onPointerMove}
           onPointerUp={onPointerUp}
-          onPointerCancel={() => (pressRef.current = null)}
+          onPointerCancel={(event) => {
+            if (pinchRef.current !== null) endPinch(event.pointerId);
+            else downRef.current.delete(event.pointerId);
+            pressRef.current = null;
+          }}
           onPointerLeave={onPointerLeave}
           onDoubleClick={onDoubleClick}
         />
@@ -805,33 +863,20 @@ export function GraphView({
           <div
             role="group"
             aria-label="Zoom"
-            className={cn(
-              "absolute z-[3] flex items-stretch overflow-hidden rounded-[8px] border border-border bg-popover text-popover-foreground shadow-sm transition-[right] duration-300 ease-[cubic-bezier(0.22,1,0.36,1)] motion-reduce:transition-none",
-              compact ? "bottom-2 flex-row" : "bottom-3 flex-col",
-            )}
-            style={{ right: (compact ? 8 : 12) + coverRight }}
+            className="absolute bottom-2 z-[3] flex items-stretch overflow-hidden rounded-[8px] border border-border bg-popover text-popover-foreground shadow-sm transition-[right] duration-300 ease-[cubic-bezier(0.22,1,0.36,1)] motion-reduce:transition-none"
+            style={{ right: 8 + coverRight }}
           >
-            {compact ? (
-              <ZoomButton label="Zoom out" icon={GLYPH.minus} onClick={() => zoomBy(1 / ZOOM_STEP)} small />
-            ) : (
-              <ZoomButton label="Zoom in" icon={GLYPH.plus} onClick={() => zoomBy(ZOOM_STEP)} />
-            )}
+            <ZoomButton label="Zoom out" icon={GLYPH.minus} onClick={() => zoomBy(1 / ZOOM_STEP)} />
+            {/* A fixed width, so 25% and 600% leave the buttons where they are. */}
             <span
               aria-live="polite"
-              className={cn(
-                "text-center text-[10px] tabular-nums text-muted-foreground",
-                compact ? "flex min-w-9 items-center justify-center px-1" : "px-1 py-0.5",
-              )}
+              className="flex w-12 shrink-0 items-center justify-center whitespace-nowrap text-[11px] tabular-nums text-muted-foreground"
             >
               {Math.round(zoom * 100)}%
             </span>
-            {compact ? (
-              <ZoomButton label="Zoom in" icon={GLYPH.plus} onClick={() => zoomBy(ZOOM_STEP)} small />
-            ) : (
-              <ZoomButton label="Zoom out" icon={GLYPH.minus} onClick={() => zoomBy(1 / ZOOM_STEP)} />
-            )}
-            <span className={compact ? "w-px bg-border" : "h-px bg-border"} />
-            <ZoomButton label="Fit to screen" icon={GLYPH.fit} onClick={fitToScreen} small={compact} />
+            <ZoomButton label="Zoom in" icon={GLYPH.plus} onClick={() => zoomBy(ZOOM_STEP)} />
+            <span aria-hidden className="w-px bg-border" />
+            <ZoomButton label="Fit to screen" icon={GLYPH.fit} onClick={fitToScreen} />
           </div>
         ) : null}
         {pinned === 0 ? null : (
@@ -862,18 +907,7 @@ const GLYPH = {
   fit: "M8 3H5a2 2 0 0 0-2 2v3M21 8V5a2 2 0 0 0-2-2h-3M3 16v3a2 2 0 0 0 2 2h3M16 21h3a2 2 0 0 0 2-2v-3",
 } as const;
 
-function ZoomButton({
-  label,
-  icon,
-  onClick,
-  small = false,
-}: {
-  label: string;
-  icon: string;
-  onClick: () => void;
-  /** The one-row buttons of a short canvas. */
-  small?: boolean;
-}) {
+function ZoomButton({ label, icon, onClick }: { label: string; icon: string; onClick: () => void }) {
   return (
     <button
       type="button"
@@ -881,15 +915,14 @@ function ZoomButton({
       aria-label={label}
       onClick={onClick}
       className={cn(
-        "flex items-center justify-center text-foreground transition-colors hover:bg-accent",
-        small ? "size-7" : "size-8",
+        "flex size-8 shrink-0 items-center justify-center text-foreground transition-colors hover:bg-accent",
         FOCUS_RING,
       )}
     >
       <svg
         aria-hidden
-        width={small ? 14 : 16}
-        height={small ? 14 : 16}
+        width={16}
+        height={16}
         viewBox="0 0 24 24"
         fill="none"
         stroke="currentColor"

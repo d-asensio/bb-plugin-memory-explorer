@@ -547,3 +547,32 @@ export function zoomView(view: View, fit: View, factor: number, cx: number, cy: 
 export function toLayout(view: View, x: number, y: number): { x: number; y: number } {
   return { x: (x - view.ox) / view.scale, y: (y - view.oy) / view.scale };
 }
+
+/** A point on the canvas, in pixels. */
+export interface Point {
+  x: number;
+  y: number;
+}
+
+/**
+ * The view during a two-finger pinch. `start` was the view when the fingers
+ * touched down at `a0` and `b0`; they are now at `a1` and `b1`. The scale
+ * grows or shrinks with the distance between the fingers (kept between
+ * `fit.scale` × ZOOM_MIN and × ZOOM_MAX), and what was between the fingers
+ * at the start stays between them, so spreading zooms in on that spot and
+ * moving both fingers pans.
+ */
+export function pinchView(start: View, fit: View, a0: Point, b0: Point, a1: Point, b1: Point): View {
+  const before = Math.max(Math.hypot(b0.x - a0.x, b0.y - a0.y), 1);
+  const after = Math.hypot(b1.x - a1.x, b1.y - a1.y);
+  const scale = Math.min(
+    fit.scale * ZOOM_MAX,
+    Math.max(fit.scale * ZOOM_MIN, start.scale * (after / before)),
+  );
+  const held = toLayout(start, (a0.x + b0.x) / 2, (a0.y + b0.y) / 2);
+  return {
+    scale,
+    ox: (a1.x + b1.x) / 2 - held.x * scale,
+    oy: (a1.y + b1.y) / 2 - held.y * scale,
+  };
+}

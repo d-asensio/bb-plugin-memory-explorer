@@ -10,6 +10,7 @@ import {
   edgeAt,
   edgePath,
   labelBox,
+  pinchView,
   placeEdgeLabels,
   toLayout,
   zoomView,
@@ -331,4 +332,26 @@ test("placeEdgeLabels: a label whose middle is taken slides along its link to th
   // Nowhere free along the link: skipped.
   const wall = [{ x: 0, y: 90, w: 300, h: 20 }];
   assert.deepEqual(placeEdgeLabels([request], [], wall, size, measure), []);
+});
+
+test("pinchView: spreading the fingers zooms in on the spot between them", () => {
+  const fit = { scale: 1, ox: 0, oy: 0 };
+  const start = { scale: 2, ox: 10, oy: 20 };
+  // The fingers twice as far apart, their middle still at (150, 100).
+  const view = pinchView(start, fit, { x: 125, y: 100 }, { x: 175, y: 100 }, { x: 100, y: 100 }, { x: 200, y: 100 });
+  assert.equal(view.scale, 4);
+  const before = toLayout(start, 150, 100);
+  const after = toLayout(view, 150, 100);
+  assert.ok(close(before.x, after.x) && close(before.y, after.y));
+});
+
+test("pinchView: moving both fingers pans; the scale stays within the zoom limits", () => {
+  const fit = { scale: 2, ox: 0, oy: 0 };
+  const start = { scale: 2, ox: 0, oy: 0 };
+  const moved = pinchView(start, fit, { x: 0, y: 0 }, { x: 100, y: 0 }, { x: 30, y: 40 }, { x: 130, y: 40 });
+  assert.deepEqual(moved, { scale: 2, ox: 30, oy: 40 });
+  const spread = pinchView(start, fit, { x: 0, y: 0 }, { x: 10, y: 0 }, { x: 0, y: 0 }, { x: 1000, y: 0 });
+  assert.equal(spread.scale, 2 * ZOOM_MAX);
+  const pinched = pinchView(start, fit, { x: 0, y: 0 }, { x: 1000, y: 0 }, { x: 0, y: 0 }, { x: 1, y: 0 });
+  assert.equal(pinched.scale, 2 * ZOOM_MIN);
 });
