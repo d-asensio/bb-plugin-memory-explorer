@@ -26,11 +26,14 @@ A **Memory** page in the sidebar (`/plugins/memory-explorer/memory`):
   addresses, Slack ids and summaries.
 - **Drawer**: a clicked row or graph node opens the memory. Its `[[links]]`
   open the memory they name; below come the memories that link to it, a small
-  graph of its neighbours, and for an entity, the threads whose title names it
-  and its Notes.
+  graph of its neighbours (pinch or use + and − to zoom it), and for an entity,
+  the threads whose title names it and its Notes.
 - **Graph**: every memory and link on a canvas. Scroll or use + and − to zoom,
   drag the background to pan, drag a node to pin it, double-click a pinned node
-  to release it. Solid lines are relations, dashed lines mentions. Unconnected
+  to release it. A relation is an arrow labelled with its type (`member of`,
+  `led to`): the labels show for the memory you point at or open, and for every
+  relation once you zoom in or the graph is small. Dashed lines are mentions.
+  When two memories link both ways, the two lines bend apart. Unconnected
   entities and broken links are listed below the canvas.
 - **Preferences** of kind `preference` tagged `unconfirmed` get **Confirm**
   (removes the tag) and **Discard** (deletes the memory).
@@ -72,11 +75,52 @@ Prefers written updates to meetings.
 - `name` is the label the page shows; `aliases`, `links.email` and
   `links.slack` are searched. Every `links` entry becomes a chip, which opens
   its URL, or writes an email for an email address.
-- `[[name]]` or `[[name|label]]` anywhere in the text links to another memory.
-  Lines of the form `- <relation> [[name]]` in `## Relations` are typed
-  relations: solid lines in the graph.
+- `[[name]]` or `[[name|label]]` anywhere in the text links to another memory,
+  and `## Relations` says how the entity relates to it (next section).
 - `## Notes` is the user's own text, edited on the page. Keep it the last
   section. Agents may read it but should not write it.
+
+## Links and relations
+
+Every memory, entity or not, can link to other memories and say how it
+relates to them:
+
+- `[[name]]` or `[[name|label]]` anywhere in the text is a *mention*: a dashed
+  line in the graph.
+- A `## Relations` section of lines `- <relation> [[name]]` (or
+  `[[name|label]]`) holds *typed relations*: arrows from this memory to the one
+  named, labelled with the relation. The relation is free text, a few words
+  that read as "this memory *relation* that one". A relation beats a mention of
+  the same memory, and the first relation to a memory is the one shown.
+
+So an episode can say what came of it, and the procedure it led to where it
+came from. In `episode.billing-webhook-outage`:
+
+```markdown
+Stripe webhooks failed for two hours after a key rotation; [[person.ana|Ana]] rolled it back.
+
+## Relations
+- led to [[procedure.key-rotation|Key rotation]]
+- involved [[person.ana|Ana Ruiz]]
+- affected [[system.billing|Billing service]]
+```
+
+and in `procedure.key-rotation`:
+
+```markdown
+Rotate the signing key with both keys accepted for a day.
+
+## Relations
+- based on [[episode.billing-webhook-outage|Billing webhook outage]]
+- applies to [[system.billing|Billing service]]
+```
+
+Relations that read well: between entities `member of`, `owns`, `uses`,
+`works on`, `reports to`, `escalates to`; from an episode `led to`,
+`involved`, `affected`; from a procedure or a decision `based on`,
+`applies to`, `replaces`; from a fact `about`, `learned in`. Any other words
+work too. Memories written before 0.2.0 need no change: their `## Relations`
+lines are the same relations, now drawn with their labels.
 
 ## Settings
 
@@ -110,7 +154,8 @@ bb plugin dev        # rebuilds and reloads on save
   the digest command.
 - `memory-source.ts`: reads and writes memory through the Memory plugin's
   `listMemories`, `updateMemory` and `deleteMemory`.
-- `knowledge.ts`: entity fields, `[[links]]`, relations, Notes, the graph.
+- `knowledge.ts`: entity fields, `[[links]]`, relations of every memory, Notes,
+  the graph.
   `knowledge-detail.ts`: what the drawer shows. `blocks.ts`: text as display
   blocks. `frontmatter.ts`: the front matter subset. `notes-write.ts`: Notes,
   retried on a version conflict. `digest-command.ts`: the digest command.

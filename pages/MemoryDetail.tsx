@@ -20,7 +20,7 @@ import {
 import type { Block, Segment } from "../blocks";
 import { GraphView } from "./GraphView";
 import { TypeIcon, useDarkMode } from "./TypeIcon";
-import { conceptSummary, typeStyle } from "../type-style";
+import { conceptSummary, conceptTitle, typeStyle } from "../type-style";
 import { Icon } from "@/components/ui/icon";
 import {
   BUTTON_PRIMARY,
@@ -296,7 +296,7 @@ function LinkedFrom({
               title={node.summary === "" ? node.name : node.summary}
               className={CHIP_OUTLINE}
             >
-              <span className="min-w-0 truncate">{node.label}</span>
+              <span className="min-w-0 truncate">{conceptTitle(node.label, node.name)}</span>
               <span className="shrink-0 text-foreground/50">
                 {type === "relation" ? relation : "mentions"}
               </span>
@@ -334,8 +334,9 @@ function LocalGraph({
           onSelect={(picked) => {
             if (picked !== null && picked !== name) onSelect(picked);
           }}
-          height={220}
-          controls={false}
+          height={300}
+          // The wheel scrolls the drawer; a pinch or the buttons zoom.
+          scrollZoom={false}
         />
       )}
     </section>

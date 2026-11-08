@@ -5,6 +5,12 @@ import {
   MAX_SCALE,
   ZOOM_MAX,
   ZOOM_MIN,
+  arrowHead,
+  clip,
+  edgeAt,
+  edgePath,
+  labelBox,
+  placeEdgeLabels,
   toLayout,
   zoomView,
   RING_GAP,
@@ -106,22 +112,33 @@ test("nodeAt: the nearest node within its radius plus 6px, else null", () => {
   assert.equal(nodeAt(points, { scale: 2, ox: 100, oy: 50 }, 120, 50), "b");
 });
 
-test("placeLabels: right of the node, flipped left at the right edge, overlaps skipped in order", () => {
+test("placeLabels: right of the node, flipped left at the right edge or when the right is taken", () => {
   const measure = (text: string) => text.length * 6;
   const labels = placeLabels(
     [
       { name: "a", text: "Alpha", x: 50, y: 50, r: 4 },
-      // Would cover Alpha's label: skipped.
+      // Its right would cover Alpha's label: drawn on the left.
       { name: "b", text: "Beta", x: 52, y: 55, r: 4 },
       // No room on the right before the edge: drawn on the left.
       { name: "c", text: "Gamma", x: 190, y: 50, r: 4 },
+      // Alpha's label on the right, Beta's on the left: skipped.
+      { name: "d", text: "Delta", x: 52, y: 52, r: 4 },
     ],
     200,
     measure,
   );
   assert.deepEqual(labels, [
     { name: "a", text: "Alpha", x: 58, y: 50, align: "left" },
+    { name: "b", text: "Beta", x: 44, y: 55, align: "right" },
     { name: "c", text: "Gamma", x: 182, y: 50, align: "right" },
+  ]);
+});
+
+test("placeLabels: a taken box counts as a label already placed", () => {
+  const measure = (text: string) => text.length * 6;
+  const taken = [{ x: 55, y: 40, w: 60, h: 20 }];
+  assert.deepEqual(placeLabels([{ name: "a", text: "Alpha", x: 50, y: 50, r: 4 }], 200, measure, taken), [
+    { name: "a", text: "Alpha", x: 42, y: 50, align: "right" },
   ]);
 });
 
@@ -172,4 +189,146 @@ test("layoutGraph: collide keeps linked nodes their radii plus the gap apart", (
     }
   }
   assert.ok(closest > 20, `closest gap ${closest}`);
+});
+
+test("edgePath: a straight link runs rim to rim, its label at the middle", () => {
+  const path = edgePath({ x: 0, y: 0, r: 10 }, { x: 100, y: 0, r: 20 });
+  assert.ok(path);
+  assert.deepEqual([path.x1, path.y1, path.x2, path.y2], [10, 0, 80, 0]);
+  assert.equal(path.control, null);
+  assert.deepEqual([path.ux, path.uy], [1, 0]);
+  assert.deepEqual(path.label, { x: 45, y: 0, side: null, along: { x: 35, y: 0 } });
+});
+
+test("edgePath: overlapping nodes have no path", () => {
+  assert.equal(edgePath({ x: 0, y: 0, r: 10 }, { x: 15, y: 0, r: 10 }), null);
+});
+
+test("edgePath: a link and the link back bend to opposite sides", () => {
+  const a = { x: 0, y: 0, r: 10 };
+  const b = { x: 100, y: 0, r: 10 };
+  const there = edgePath(a, b, 12)!;
+  const back = edgePath(b, a, 12)!;
+  // Going right on a canvas whose y axis points down, the left is up.
+  assert.ok(there.control !== null && there.control.y < 0);
+  assert.ok(back.control !== null && back.control.y > 0);
+  assert.deepEqual(there.label.side, { x: 0, y: -1 });
+  assert.deepEqual(back.label.side, { x: 0, y: 1 });
+  // Both ends stay on the rims.
+  assert.ok(close(Math.hypot(there.x1 - a.x, there.y1 - a.y), a.r));
+  assert.ok(close(Math.hypot(there.x2 - b.x, there.y2 - b.y), b.r));
+  // At the end, the curve heads into the target, down and to the right.
+  assert.ok(there.ux > 0 && there.uy > 0);
+  assert.ok(close(Math.hypot(there.ux, there.uy), 1));
+});
+
+test("arrowHead: the tip at the path's end, the base behind it, as wide as asked", () => {
+  const path = edgePath({ x: 0, y: 0, r: 0 }, { x: 100, y: 0, r: 10 })!;
+  const [tip, left, right] = arrowHead(path, 6, 8);
+  assert.deepEqual(tip, { x: 90, y: 0 });
+  assert.deepEqual([left.x, right.x], [84, 84]);
+  assert.equal(Math.abs(left.y - right.y), 8);
+});
+
+test("placeEdgeLabels: centred on a straight link; skipped over a node, a taken box or another label", () => {
+  const measure = (text: string) => text.length * 5;
+  const size = { width: 300, height: 200 };
+  const labels = placeEdgeLabels(
+    [
+      { key: "a", text: "owns", x: 100, y: 100, side: null },
+      // Overlaps the first label.
+      { key: "b", text: "uses", x: 110, y: 104, side: null },
+      // On top of a node.
+      { key: "c", text: "runs", x: 200, y: 50, side: null },
+      // Over a node's label.
+      { key: "d", text: "leads", x: 60, y: 160, side: null },
+      // Past the canvas edge.
+      { key: "e", text: "attends", x: 295, y: 100, side: null },
+    ],
+    [{ x: 200, y: 50, r: 8 }],
+    [{ x: 40, y: 150, w: 60, h: 14 }],
+    size,
+    measure,
+  );
+  assert.deepEqual(labels, [{ key: "a", text: "owns", x: 86, y: 93, w: 28, h: 14 }]);
+});
+
+test("placeEdgeLabels: a pushed label clears its point on its side, so a link and the link back both fit", () => {
+  const measure = (text: string) => text.length * 5;
+  const labels = placeEdgeLabels(
+    [
+      { key: "there", text: "led to", x: 100, y: 100, side: { x: 0, y: -1 } },
+      { key: "back", text: "based on", x: 100, y: 100, side: { x: 0, y: 1 } },
+    ],
+    [],
+    [],
+    { width: 300, height: 200 },
+    measure,
+  );
+  assert.equal(labels.length, 2);
+  const [there, back] = labels;
+  assert.equal(there!.y + there!.h, 98);
+  assert.equal(back!.y, 102);
+  // Sideways the push is half the width: a vertical link's labels sit left and right of it.
+  const [side] = placeEdgeLabels(
+    [{ key: "x", text: "owns", x: 100, y: 100, side: { x: 1, y: 0 } }],
+    [],
+    [],
+    { width: 300, height: 200 },
+    measure,
+  );
+  assert.equal(side!.x, 102);
+});
+
+test("labelBox: the box a node label covers, either side of its anchor", () => {
+  assert.deepEqual(labelBox({ name: "a", text: "A", x: 10, y: 20, align: "left" }, 30), {
+    x: 10,
+    y: 13,
+    w: 30,
+    h: 14,
+  });
+  assert.deepEqual(labelBox({ name: "a", text: "A", x: 50, y: 20, align: "right" }, 30), {
+    x: 20,
+    y: 13,
+    w: 30,
+    h: 14,
+  });
+});
+
+test("clip: long text is cut with an ellipsis", () => {
+  assert.equal(clip("member of", 24), "member of");
+  assert.equal(clip("is the main point of contact for", 12), "is the main…");
+});
+
+test("edgeAt: the path within the tolerance, the nearest when two are", () => {
+  const a = { x: 0, y: 0, r: 10 };
+  const b = { x: 100, y: 0, r: 10 };
+  const straight = edgePath(a, b)!;
+  const there = edgePath(a, b, 12)!;
+  const back = edgePath(b, a, 12)!;
+  assert.equal(edgeAt([straight], 50, 3), 0);
+  assert.equal(edgeAt([straight], 50, 8), -1);
+  // Beyond either end of a line is not on it.
+  assert.equal(edgeAt([straight], 120, 0), -1);
+  // The link bent up and the link back bent down: each is found on its own side.
+  assert.equal(edgeAt([there, back], 50, -12), 0);
+  assert.equal(edgeAt([there, back], 50, 12), 1);
+  assert.equal(edgeAt([there, back], 50, 0), -1);
+});
+
+test("placeEdgeLabels: a label whose middle is taken slides along its link to the first free place", () => {
+  const measure = (text: string) => text.length * 5;
+  const size = { width: 300, height: 200 };
+  const request = { key: "a", text: "owns", x: 100, y: 100, side: null, along: { x: 100, y: 0 } };
+  // A node sits on the middle: the label tries 30% of the way back towards the start first.
+  const [slid] = placeEdgeLabels([request], [{ x: 100, y: 100, r: 6 }], [], size, measure);
+  assert.equal(slid!.x + slid!.w / 2, 70);
+  // Without `along` it stays put, and is skipped.
+  assert.deepEqual(
+    placeEdgeLabels([{ ...request, along: undefined }], [{ x: 100, y: 100, r: 6 }], [], size, measure),
+    [],
+  );
+  // Nowhere free along the link: skipped.
+  const wall = [{ x: 0, y: 90, w: 300, h: 20 }];
+  assert.deepEqual(placeEdgeLabels([request], [], wall, size, measure), []);
 });

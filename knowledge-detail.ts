@@ -7,9 +7,9 @@ import {
   buildGraph,
   detailsToBlocks,
   entityFields,
-  entityRelations,
   isEntity,
   memoryLabel,
+  memoryRelations,
   memoryType,
   notesOf,
   withoutNotesSection,
@@ -89,7 +89,8 @@ export function knowledgeDetail<Thread extends RelatedThreadFields>(
     label: memoryLabel(memory),
     // The Notes editor shows the Notes section: no block carries it.
     blocks: detailsToBlocks(entity ? withoutNotesSection(memory.details) : memory.details),
-    relations: entity ? entityRelations(memory) : [],
+    // Any memory may say how it relates to others, not only an entity.
+    relations: memoryRelations(memory),
     backlinks: backlinks(buildGraph(memories), name),
     // The slug half of the id is what a thread's `initiative` holds.
     relatedThreads: entity

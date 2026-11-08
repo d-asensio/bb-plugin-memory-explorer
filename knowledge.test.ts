@@ -317,3 +317,37 @@ test("withoutNotesSection drops the section only", () => {
   assert.equal(withoutNotesSection(`${BASE}\n## Notes\nx\n`), `${BASE}\n`);
   assert.equal(withoutNotesSection(BASE), BASE);
 });
+
+test("parseRelations makes runs of spaces in a type one", () => {
+  assert.deepEqual(parseRelations("-   led   to  [[procedure.replay]]"), [
+    { type: "led to", target: "procedure.replay", label: null },
+  ]);
+});
+
+test("buildGraph: any memory, not only an entity, has typed relations, both ways", () => {
+  const g = buildGraph([
+    memory("episode.outage", {
+      kind: "episode",
+      details:
+        "Webhooks failed after a key rotation; [[person.a|A]] rolled it back.\n\n## Relations\n- led to [[procedure.rotate|Key rotation]]\n- involved [[person.a|A]]\n",
+    }),
+    memory("procedure.rotate", {
+      kind: "procedure",
+      details: "Accept both keys for a day.\n\n## Relations\n- based on [[episode.outage]]\n",
+    }),
+    entity("person.a", "person", "## Essentials\nOn call.\n"),
+  ]);
+  assert.deepEqual(
+    g.edges.map((e) => [e.source, e.target, e.type, e.relation]),
+    [
+      ["episode.outage", "procedure.rotate", "relation", "led to"],
+      // The relation wins over the mention of the same memory in the text.
+      ["episode.outage", "person.a", "relation", "involved"],
+      ["procedure.rotate", "episode.outage", "relation", "based on"],
+    ],
+  );
+  assert.deepEqual(
+    backlinks(g, "episode.outage").map((b) => [b.node.name, b.type, b.relation]),
+    [["procedure.rotate", "relation", "based on"]],
+  );
+});

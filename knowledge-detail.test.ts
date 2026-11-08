@@ -117,3 +117,16 @@ test("relatedThreads: the name must be a whole word", () => {
     1,
   );
 });
+
+test("knowledgeDetail lists the typed relations of any memory, not only an entity", () => {
+  const episode = memory("episode.outage", {
+    kind: "episode",
+    tags: ["incident"],
+    details: "Webhooks failed.\n\n## Relations\n- led to [[procedure.rotate|Key rotation]]\n",
+  });
+  const procedure = memory("procedure.rotate", { kind: "procedure", tags: [], details: "Rotate keys." });
+  const detail = knowledgeDetail([episode, procedure], "episode.outage", cards);
+  assert.deepEqual(detail?.relations, [{ type: "led to", target: "procedure.rotate", label: "Key rotation" }]);
+  assert.deepEqual(detail?.notes, null);
+  assert.deepEqual(detail?.relatedThreads, []);
+});

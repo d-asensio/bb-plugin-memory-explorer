@@ -4,10 +4,10 @@
 // The Table tab lists every memory with its type's icon and colour
 // (type-style.ts), filtered by type and searched by name, label, aliases,
 // email, Slack id and summary, sortable by column. The Graph tab draws every
-// memory and link (GraphView.tsx: zoom, pan, drag to pin), then lists the
-// unconnected entities and the broken links. Clicking a row or a node opens
-// the memory in a drawer (MemoryDetail.tsx). Nothing watches memory: Refresh
-// reads it again.
+// memory and link, each relation an arrow labelled with its type (GraphView.tsx:
+// zoom, pan, drag to pin), then lists the unconnected entities and the broken
+// links. Clicking a row or a node opens the memory in a drawer
+// (MemoryDetail.tsx). Nothing watches memory: Refresh reads it again.
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { KeyboardEvent, ReactNode } from "react";
 import { useRpc } from "@get-bb/plugin-sdk/app";
@@ -38,7 +38,7 @@ const ALL = "all";
 /** The type chips, in order: the entity types, then the other kinds. */
 const TYPE_ORDER: readonly string[] = [...ENTITY_TYPES, ...KIND_TYPES];
 const GRAPH_HINT =
-  "Scroll or use + and − to zoom, drag the background to pan, drag a node to pin it where you drop it, double-click a pinned node to release it. Solid lines are relations, dashed lines mentions.";
+  "Scroll or use + and − to zoom, drag the background to pan, drag a node to pin it where you drop it, double-click a pinned node to release it. Arrows are relations, labelled with their type when you point at a memory or zoom in; dashed lines are mentions.";
 /** Pinned graph nodes survive switching tabs under this key. */
 const GRAPH_PIN_KEY = "memory";
 
@@ -669,6 +669,8 @@ export function MemoryPage() {
     [list],
   );
   const nodeByName = useMemo(() => new Map(nodes.map((node) => [node.name, node])), [nodes]);
+  // The drawer's local graph names its nodes as the table does.
+  const titledGraph = useMemo(() => (list === undefined ? undefined : { ...list, nodes }), [list, nodes]);
   const matches = useCallback(
     (node: GraphNode) => {
       const memory = memories.get(node.name);
@@ -825,12 +827,12 @@ export function MemoryPage() {
         </div>
       </div>
       <Drawer open={drawerOpen && selected !== null} modal={tab === "table"} onClose={close}>
-        {selected === null || list === undefined ? null : (
+        {selected === null || titledGraph === undefined ? null : (
           <MemoryDetail
             key={selected}
             name={selected}
             node={nodeByName.get(selected)}
-            graph={list}
+            graph={titledGraph}
             exists={exists}
             version={version}
             noteDraft={noteDrafts.get(selected)}

@@ -227,41 +227,301 @@ export interface PlacedLabel {
   align: "left" | "right";
 }
 
+/** A rectangle in canvas pixels, from its top left corner. */
+export interface Box {
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+}
+
+/** True when `a` and `b` come closer than `gap` pixels sideways (they may touch vertically). */
+function boxesOverlap(a: Box, b: Box, gap = 2): boolean {
+  return a.x < b.x + b.w + gap && b.x < a.x + a.w + gap && a.y < b.y + b.h && b.y < a.y + a.h;
+}
+
+/** True when the circle at (`x`, `y`) with radius `r` reaches into `box`. */
+function circleTouchesBox(circle: { x: number; y: number; r: number }, box: Box): boolean {
+  const nx = Math.max(box.x, Math.min(circle.x, box.x + box.w));
+  const ny = Math.max(box.y, Math.min(circle.y, box.y + box.h));
+  return Math.hypot(circle.x - nx, circle.y - ny) < circle.r;
+}
+
+/** The box a node label `w` pixels wide covers, as placeLabels placed it. */
+export function labelBox(label: PlacedLabel, w: number): Box {
+  return { x: label.align === "left" ? label.x : label.x - w, y: label.y - 7, w, h: 14 };
+}
+
 /**
  * Labels in request order (the first wins a collision): right of the node,
- * or left of it when the right side would pass the canvas edge; a label whose
- * box would overlap one already placed is skipped.
+ * else left of it, when the right side would pass the canvas edge or overlap
+ * a label already placed or a box in `taken`; a label with no free side is
+ * skipped.
  */
 export function placeLabels(
   requests: readonly LabelRequest[],
   width: number,
   measure: (text: string) => number,
+  taken: readonly Box[] = [],
 ): PlacedLabel[] {
-  const boxes: Array<{ x: number; y: number; w: number; h: number }> = [];
+  const boxes: Box[] = [...taken];
   const placed: PlacedLabel[] = [];
   for (const request of requests) {
     const w = measure(request.text);
-    const right = request.x + request.r + 4 + w < width - 4;
-    const lx = right ? request.x + request.r + 4 : request.x - request.r - 4;
-    const box = { x: right ? lx : lx - w, y: request.y - 7, w, h: 14 };
-    const overlaps = boxes.some(
-      (other) =>
-        box.x < other.x + other.w + 2 &&
-        other.x < box.x + box.w + 2 &&
-        box.y < other.y + other.h &&
-        other.y < box.y + box.h,
-    );
-    if (overlaps) continue;
-    boxes.push(box);
-    placed.push({
-      name: request.name,
-      text: request.text,
-      x: lx,
-      y: request.y,
-      align: right ? "left" : "right",
-    });
+    const sides: Array<"right" | "left"> =
+      request.x + request.r + 4 + w < width - 4 ? ["right", "left"] : ["left"];
+    for (const side of sides) {
+      const label: PlacedLabel = {
+        name: request.name,
+        text: request.text,
+        x: side === "right" ? request.x + request.r + 4 : request.x - request.r - 4,
+        y: request.y,
+        align: side === "right" ? "left" : "right",
+      };
+      const box = labelBox(label, w);
+      if (boxes.some((other) => boxesOverlap(box, other))) continue;
+      boxes.push(box);
+      placed.push(label);
+      break;
+    }
   }
   return placed;
+}
+
+// ---- links ---------------------------------------------------------------------
+
+/** A node as drawn: its centre and radius, in canvas pixels. */
+export interface DrawnNode {
+  x: number;
+  y: number;
+  r: number;
+}
+
+/**
+ * A link as drawn from one node's rim to the other's: a straight line, or a
+ * quadratic curve through (`cx`, `cy`) that bends to one side.
+ */
+export interface EdgePath {
+  /** Start, on the source node's rim. */
+  x1: number;
+  y1: number;
+  /** End, on the target node's rim: where an arrow's tip goes. */
+  x2: number;
+  y2: number;
+  /** The curve's control point; null for a straight line. */
+  control: { x: number; y: number } | null;
+  /** Unit direction of the path where it reaches the target. */
+  ux: number;
+  uy: number;
+  /**
+   * Where the path's label goes: the middle of a straight line, which the
+   * label covers; for a curve, the middle of the straight way between the
+   * nodes, and `side`, the unit vector towards the curve: its label is pushed
+   * off that way, so the label of the link back lands on the other side.
+   * `along` runs from that point to the end of the stretch between the rims,
+   * for a label that has to slide along the link to find room.
+   */
+  label: {
+    x: number;
+    y: number;
+    side: { x: number; y: number } | null;
+    along: { x: number; y: number };
+  };
+}
+
+/**
+ * The path of a link from `a` to `b`, rim to rim. With `bend` it curves about
+ * that many pixels (at its middle) to the left of the way from `a` to `b`, so
+ * the link back from `b` to `a`, bent by the same amount, curves to the other
+ * side and the two never cover each other. Null when the nodes overlap:
+ * nothing shows between them.
+ */
+export function edgePath(a: DrawnNode, b: DrawnNode, bend = 0): EdgePath | null {
+  const dx = b.x - a.x;
+  const dy = b.y - a.y;
+  const d = Math.hypot(dx, dy);
+  if (d <= a.r + b.r) return null;
+  const ux = dx / d;
+  const uy = dy / d;
+  if (bend === 0) {
+    const x1 = a.x + ux * a.r;
+    const y1 = a.y + uy * a.r;
+    const x2 = b.x - ux * b.r;
+    const y2 = b.y - uy * b.r;
+    return {
+      x1,
+      y1,
+      x2,
+      y2,
+      control: null,
+      ux,
+      uy,
+      label: { x: (x1 + x2) / 2, y: (y1 + y2) / 2, side: null, along: { x: (x2 - x1) / 2, y: (y2 - y1) / 2 } },
+    };
+  }
+  // Left of the way from a to b, on a canvas whose y axis points down.
+  const side = { x: uy, y: -ux };
+  // A quadratic curve passes halfway between the chord and its control point.
+  const control = { x: a.x + dx / 2 + side.x * bend * 2, y: a.y + dy / 2 + side.y * bend * 2 };
+  const toward = (from: DrawnNode) => {
+    const vx = control.x - from.x;
+    const vy = control.y - from.y;
+    const v = Math.hypot(vx, vy) || 1;
+    return { x: from.x + (vx / v) * from.r, y: from.y + (vy / v) * from.r };
+  };
+  const start = toward(a);
+  const end = toward(b);
+  const ex = end.x - control.x;
+  const ey = end.y - control.y;
+  const e = Math.hypot(ex, ey) || 1;
+  return {
+    x1: start.x,
+    y1: start.y,
+    x2: end.x,
+    y2: end.y,
+    control,
+    ux: ex / e,
+    uy: ey / e,
+    label: {
+      x: a.x + dx / 2,
+      y: a.y + dy / 2,
+      side,
+      along: { x: (end.x - start.x) / 2, y: (end.y - start.y) / 2 },
+    },
+  };
+}
+
+/** The three corners of an arrowhead `length` long and `width` wide whose tip is at the path's end. */
+export function arrowHead(
+  path: EdgePath,
+  length: number,
+  width: number,
+): [{ x: number; y: number }, { x: number; y: number }, { x: number; y: number }] {
+  const bx = path.x2 - path.ux * length;
+  const by = path.y2 - path.uy * length;
+  const half = width / 2;
+  return [
+    { x: path.x2, y: path.y2 },
+    { x: bx + path.uy * half, y: by - path.ux * half },
+    { x: bx - path.uy * half, y: by + path.ux * half },
+  ];
+}
+
+/** A label wanted at the middle of a link, in canvas pixels: EdgePath's `label` with its text. */
+export interface EdgeLabelRequest {
+  key: string;
+  text: string;
+  x: number;
+  y: number;
+  /** Push the label off (`x`, `y`) this way until it clears that point; null centres it there. */
+  side: { x: number; y: number } | null;
+  /** Where the label may slide when its place is taken: up to half this far either way. */
+  along?: { x: number; y: number };
+}
+
+/** Where a link label tries to go, as fractions of `along`: the middle first, then either way. */
+const SLIDES = [0, -0.3, 0.3, -0.55, 0.55];
+
+/** Where to draw a link's label: its box, the text centred in it. */
+export interface PlacedEdgeLabel extends Box {
+  key: string;
+  text: string;
+}
+
+/** Height of a link label's box, in pixels. */
+export const EDGE_LABEL_HEIGHT = 14;
+/** Room either side of a link label's text, in pixels. */
+const EDGE_LABEL_PAD = 4;
+
+/**
+ * Link labels in request order (the first wins a collision), each a box
+ * centred on its point, or pushed off it to its `side` with a 2px gap. A
+ * label may not leave the canvas, reach into a node (`nodes`, with their
+ * drawn radii), or overlap a box in `taken` (the nodes' labels) or a link
+ * label already placed: it slides along its link (`along`) to the first free
+ * place, and is skipped when there is none.
+ */
+export function placeEdgeLabels(
+  requests: readonly EdgeLabelRequest[],
+  nodes: readonly DrawnNode[],
+  taken: readonly Box[],
+  size: { width: number; height: number },
+  measure: (text: string) => number,
+): PlacedEdgeLabel[] {
+  const boxes: Box[] = [...taken];
+  const placed: PlacedEdgeLabel[] = [];
+  for (const request of requests) {
+    const w = measure(request.text) + 2 * EDGE_LABEL_PAD;
+    const h = EDGE_LABEL_HEIGHT;
+    // How far the box's centre must move along `side` for the box to clear the point.
+    const push =
+      request.side === null
+        ? 0
+        : (Math.abs(request.side.x) * w) / 2 + (Math.abs(request.side.y) * h) / 2 + 2;
+    const free = (box: Box) =>
+      box.x >= 2 &&
+      box.y >= 2 &&
+      box.x + box.w <= size.width - 2 &&
+      box.y + box.h <= size.height - 2 &&
+      !nodes.some((node) => circleTouchesBox({ ...node, r: node.r + 2 }, box)) &&
+      !boxes.some((other) => boxesOverlap(box, other));
+    for (const slide of request.along === undefined ? [0] : SLIDES) {
+      const cx = request.x + (request.along?.x ?? 0) * slide + (request.side?.x ?? 0) * push;
+      const cy = request.y + (request.along?.y ?? 0) * slide + (request.side?.y ?? 0) * push;
+      const box = { x: cx - w / 2, y: cy - h / 2, w, h };
+      if (!free(box)) continue;
+      boxes.push(box);
+      placed.push({ key: request.key, text: request.text, ...box });
+      break;
+    }
+  }
+  return placed;
+}
+
+/** Distance from (`x`, `y`) to the segment from (`x1`, `y1`) to (`x2`, `y2`). */
+function distanceToSegment(x: number, y: number, x1: number, y1: number, x2: number, y2: number): number {
+  const dx = x2 - x1;
+  const dy = y2 - y1;
+  const length2 = dx * dx + dy * dy;
+  const t = length2 === 0 ? 0 : Math.max(0, Math.min(1, ((x - x1) * dx + (y - y1) * dy) / length2));
+  return Math.hypot(x - (x1 + t * dx), y - (y1 + t * dy));
+}
+
+/** Distance from (`x`, `y`) to a path: exact for a line, along 16 chords for a curve. */
+function distanceToPath(path: EdgePath, x: number, y: number): number {
+  if (path.control === null) return distanceToSegment(x, y, path.x1, path.y1, path.x2, path.y2);
+  const { control } = path;
+  const at = (t: number) => ({
+    x: (1 - t) * (1 - t) * path.x1 + 2 * (1 - t) * t * control.x + t * t * path.x2,
+    y: (1 - t) * (1 - t) * path.y1 + 2 * (1 - t) * t * control.y + t * t * path.y2,
+  });
+  let best = Infinity;
+  let previous = at(0);
+  for (let step = 1; step <= 16; step++) {
+    const next = at(step / 16);
+    best = Math.min(best, distanceToSegment(x, y, previous.x, previous.y, next.x, next.y));
+    previous = next;
+  }
+  return best;
+}
+
+/** The index of the path passing nearest to canvas point (`x`, `y`), within `tolerance` pixels; else -1. */
+export function edgeAt(paths: readonly EdgePath[], x: number, y: number, tolerance = 5): number {
+  let best = -1;
+  let bestDistance = tolerance;
+  paths.forEach((path, index) => {
+    const d = distanceToPath(path, x, y);
+    if (d <= bestDistance) {
+      best = index;
+      bestDistance = d;
+    }
+  });
+  return best;
+}
+
+/** `text` cut to `max` characters, an ellipsis marking the cut. */
+export function clip(text: string, max: number): string {
+  return text.length <= max ? text : `${text.slice(0, max - 1).trimEnd()}…`;
 }
 
 // ---- camera ------------------------------------------------------------------

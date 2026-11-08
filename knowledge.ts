@@ -6,6 +6,11 @@
 // named `<type>.<slug>`, whose details are a front-matter document followed
 // by `## ` sections (for example `## Essentials`, `## Relations` and, last,
 // `## Notes`). Every other memory is shown by its kind.
+//
+// Any memory, entity or not, links to others with `[[name]]` (a mention) and
+// says how it relates to them in a `## Relations` section of lines
+// `- <relation> [[name]]` (an entity is `member of` a team, an episode `led to`
+// a procedure, a procedure is `based on` the episode).
 import { parseFrontMatter, type FrontMatterValue } from "./frontmatter.js";
 import { bodyToBlocks, linkify, type Block, type Segment } from "./blocks.js";
 
@@ -71,13 +76,17 @@ export function parseLinks(text: string): Link[] {
   }));
 }
 
-/** Lines that are exactly `- <type> [[target|label]]`; any other line is skipped. */
+/**
+ * Lines that are exactly `- <type> [[target|label]]`; any other line is
+ * skipped. The type is free text (`member of`, `led to`), its runs of spaces
+ * made one.
+ */
 export function parseRelations(sectionText: string): Relation[] {
   const line = new RegExp(`^\\s*[-*]\\s+(.+?)\\s+${LINK_SOURCE}\\s*$`);
   const relations: Relation[] = [];
   for (const raw of sectionText.replace(/\r\n/g, "\n").split("\n")) {
     const m = line.exec(raw);
-    if (m) relations.push({ type: m[1]!, target: m[2]!, label: m[3] ?? null });
+    if (m) relations.push({ type: m[1]!.replace(/\s+/g, " "), target: m[2]!, label: m[3] ?? null });
   }
   return relations;
 }
@@ -426,7 +435,7 @@ export function backlinks(graph: Graph, name: string): Backlink[] {
   return result;
 }
 
-/** The typed relations in an entity's `## Relations` section. */
-export function entityRelations(m: MemoryRecord): Relation[] {
+/** The typed relations in a memory's `## Relations` section, whatever its type. */
+export function memoryRelations(m: MemoryRecord): Relation[] {
   return parseRelations(sectionOf(splitDetails(m.details).body, "Relations"));
 }

@@ -1,6 +1,6 @@
 {
   "name": "bb-plugin-memory-explorer",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "type": "module",
   "description": "See what your agents remember: BB memory as a searchable table and a zoomable link graph, with a detail drawer for each memory.",
   "license": "MIT",
