@@ -17,8 +17,10 @@
 // node moves it and pins it there (a dot marks it); double-clicking a pinned
 // node releases it, and Release releases them all. With a `pinKey`, pins
 // survive the graph being unmounted (switching tabs) for as long as the page
-// is loaded. Colours follow the host's light or dark theme through its CSS
-// variables.
+// is loaded. With a `coverRef` (the page's drawer), the zoom buttons move clear
+// of it while it is in, zooming and fitting use the part still showing, and a
+// selected node it would hide is panned into view. Colours follow the host's
+// light or dark theme through its CSS variables.
 import { useCallback, useEffect, useLayoutEffect, useMemo, useReducer, useRef, useState } from "react";
 import type { MouseEvent as ReactMouseEvent, PointerEvent as ReactPointerEvent, RefObject } from "react";
 import {
@@ -141,6 +143,40 @@ function useWidth(ref: RefObject<HTMLElement | null>): number {
   return width;
 }
 
+/**
+ * How many pixels of the frame's right side `cover` hides while `covered`:
+ * an element such as the page's drawer, which slides in over the right of the
+ * page. Measured where the element sits when fully in, whatever its slide.
+ */
+function useCoverRight(
+  frameRef: RefObject<HTMLElement | null>,
+  coverRef: RefObject<HTMLElement | null> | undefined,
+  covered: boolean,
+): number {
+  const [cover, setCover] = useState(0);
+  useLayoutEffect(() => {
+    const frame = frameRef.current;
+    const element = coverRef?.current ?? null;
+    if (!covered || frame === null || element === null) {
+      setCover(0);
+      return;
+    }
+    const measure = () => {
+      // offsetLeft leaves out the slide's transform: where the element ends up, not where it is now.
+      const parent = element.offsetParent?.getBoundingClientRect();
+      const left = (parent?.left ?? 0) + element.offsetLeft;
+      const rect = frame.getBoundingClientRect();
+      setCover(Math.round(Math.min(rect.width, Math.max(0, rect.right - left))));
+    };
+    measure();
+    const observer = new ResizeObserver(measure);
+    observer.observe(frame);
+    observer.observe(element);
+    return () => observer.disconnect();
+  }, [frameRef, coverRef, covered]);
+  return cover;
+}
+
 /** White type icons for the canvas, decoded once per page; `onReady` runs as each one loads. */
 const ICON_IMAGES = new Map<string, HTMLImageElement>();
 function iconImage(type: string, onReady: () => void): HTMLImageElement {
@@ -219,6 +255,14 @@ export interface GraphViewProps {
   pinKey?: string;
   /** The legend of types under the canvas. Default true. */
   legend?: boolean;
+  /**
+   * An element that slides in over the right of the canvas, such as the
+   * page's drawer, and `covered` while it is in: the zoom buttons move clear
+   * of it, zooming and fitting use the part still showing, and a selected
+   * node it would hide is panned into view.
+   */
+  coverRef?: RefObject<HTMLElement | null>;
+  covered?: boolean;
 }
 
 /** A link as drawn: its path, and whether it touches the focus or is faded out. */
@@ -248,6 +292,8 @@ export function GraphView({
   scrollZoom = true,
   pinKey,
   legend = true,
+  coverRef,
+  covered = false,
 }: GraphViewProps) {
   const frameRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -261,6 +307,9 @@ export function GraphView({
   const pressRef = useRef<Press | null>(null);
   const width = useWidth(frameRef);
   const theme = useTheme(frameRef);
+  // The canvas pixels on the right hidden under the cover, and the width still showing.
+  const coverRight = useCoverRight(frameRef, coverRef, covered);
+  const shownWidth = Math.max(0, width - coverRight);
   const canvasHeight = height ?? (width < 520 ? 360 : 440);
   // Bumped when an icon loads or the pins change, to draw again.
   const [, redraw] = useReducer((n: number) => n + 1, 0);
@@ -342,6 +391,26 @@ export function GraphView({
       }),
     [points, pins, view, zoom],
   );
+  // A selected node the cover hides, or one off the canvas, is panned to the middle of what shows.
+  useEffect(() => {
+    if (selected === null || shownWidth < 160) return;
+    const node = placed().find((p) => p.name === selected);
+    if (node === undefined) return;
+    const margin = 20;
+    const inView =
+      node.x >= margin &&
+      node.x <= shownWidth - margin &&
+      node.y >= margin &&
+      node.y <= canvasHeight - margin;
+    if (inView) return;
+    setCamera({
+      ...view,
+      ox: view.ox + shownWidth / 2 - node.x,
+      oy: view.oy + canvasHeight / 2 - node.y,
+    });
+    // Only a new selection or a new cover moves the camera, not every zoom or pan.
+  }, [selected, coverRight]);
+
   const hitAt = (x: number, y: number) =>
     nodeAt(placed(), { scale: 1, ox: 0, oy: 0 }, x, y);
 
@@ -507,12 +576,12 @@ export function GraphView({
       side: path.label.side,
       along: path.label.along,
     });
-    const size = { width, height: canvasHeight };
+    const size = { width: shownWidth, height: canvasHeight };
     // Relation types may cover the nodes faded out of focus, not the ones that stand out.
     const solid = drawn.filter((p) => rank(p.name) > 0);
     const focusName = placeLabels(
       names.filter((n) => n.name === focus),
-      width,
+      shownWidth,
       measureName,
     );
     const firstTypes = placeEdgeLabels(
@@ -527,7 +596,7 @@ export function GraphView({
     );
     const otherNames = placeLabels(
       names.filter((n) => n.name !== focus),
-      width,
+      shownWidth,
       measureName,
       [...nameBoxes(focusName), ...firstTypes],
     );
@@ -632,7 +701,7 @@ export function GraphView({
     }
     tip.textContent = text;
     tip.style.display = "block";
-    tip.style.left = `${Math.max(4, Math.min(x + 12, width - tip.offsetWidth - 8))}px`;
+    tip.style.left = `${Math.max(4, Math.min(x + 12, shownWidth - tip.offsetWidth - 8))}px`;
     const below = y + 14;
     tip.style.top = `${below + tip.offsetHeight > canvasHeight - 4 ? Math.max(4, y - tip.offsetHeight - 10) : below}px`;
   }
@@ -706,7 +775,10 @@ export function GraphView({
   }
 
   const pinned = points.filter((p) => pins.has(p.name)).length;
-  const zoomBy = (factor: number) => zoomRef.current(factor, width / 2, canvasHeight / 2);
+  const zoomBy = (factor: number) => zoomRef.current(factor, shownWidth / 2, fitHeight / 2);
+  // Under a cover, Fit fits the drawing into the part that shows; else it follows the fitted view again.
+  const fitToScreen = () =>
+    setCamera(coverRight > 0 ? fitView(points, shownWidth, fitHeight) : null);
 
   return (
     <div className="flex flex-col gap-2">
@@ -734,9 +806,10 @@ export function GraphView({
             role="group"
             aria-label="Zoom"
             className={cn(
-              "absolute z-[3] flex items-stretch overflow-hidden rounded-[8px] border border-border bg-popover text-popover-foreground shadow-sm",
-              compact ? "bottom-2 right-2 flex-row" : "bottom-3 right-3 flex-col",
+              "absolute z-[3] flex items-stretch overflow-hidden rounded-[8px] border border-border bg-popover text-popover-foreground shadow-sm transition-[right] duration-300 ease-[cubic-bezier(0.22,1,0.36,1)] motion-reduce:transition-none",
+              compact ? "bottom-2 flex-row" : "bottom-3 flex-col",
             )}
+            style={{ right: (compact ? 8 : 12) + coverRight }}
           >
             {compact ? (
               <ZoomButton label="Zoom out" icon={GLYPH.minus} onClick={() => zoomBy(1 / ZOOM_STEP)} small />
@@ -758,7 +831,7 @@ export function GraphView({
               <ZoomButton label="Zoom out" icon={GLYPH.minus} onClick={() => zoomBy(1 / ZOOM_STEP)} />
             )}
             <span className={compact ? "w-px bg-border" : "h-px bg-border"} />
-            <ZoomButton label="Fit to screen" icon={GLYPH.fit} onClick={() => setCamera(null)} small={compact} />
+            <ZoomButton label="Fit to screen" icon={GLYPH.fit} onClick={fitToScreen} small={compact} />
           </div>
         ) : null}
         {pinned === 0 ? null : (

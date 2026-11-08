@@ -9,7 +9,7 @@
 // links. Clicking a row or a node opens the memory in a drawer
 // (MemoryDetail.tsx). Nothing watches memory: Refresh reads it again.
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import type { KeyboardEvent, ReactNode } from "react";
+import type { KeyboardEvent, ReactNode, RefObject } from "react";
 import { useRpc } from "@get-bb/plugin-sdk/app";
 import type { PluginRpcResult } from "@get-bb/plugin-sdk/app";
 import type { rpcContract } from "../server";
@@ -395,12 +395,15 @@ function Drawer({
   open,
   modal,
   onClose,
+  asideRef,
   children,
 }: {
   open: boolean;
   /** Dim the page behind and close on a click there (the table); the graph stays usable. */
   modal: boolean;
   onClose: () => void;
+  /** The drawer's element, which the graph keeps its zoom buttons and selected node clear of. */
+  asideRef: RefObject<HTMLElement | null>;
   children: ReactNode;
 }) {
   const closeRef = useRef<HTMLButtonElement>(null);
@@ -428,6 +431,7 @@ function Drawer({
         )}
       />
       <aside
+        ref={asideRef}
         role="dialog"
         aria-modal={modal}
         aria-label="Memory"
@@ -563,6 +567,8 @@ function GraphTab({
   onSelect,
   showMentions,
   onShowMentions,
+  drawerRef,
+  drawerOpen,
 }: {
   list: KnowledgeList;
   nodes: GraphNode[];
@@ -574,6 +580,9 @@ function GraphTab({
   onSelect: (name: string | null) => void;
   showMentions: boolean;
   onShowMentions: (show: boolean) => void;
+  /** The page's drawer, open over the right of the graph while it shows a memory. */
+  drawerRef: RefObject<HTMLElement | null>;
+  drawerOpen: boolean;
 }) {
   const shownNodes = useMemo(
     () => (type === ALL ? nodes : nodes.filter((node) => node.type === type)),
@@ -628,6 +637,8 @@ function GraphTab({
           height={600}
           pinKey={GRAPH_PIN_KEY}
           legend={false}
+          coverRef={drawerRef}
+          covered={drawerOpen}
         />
       )}
       <p className="text-[12px] leading-normal text-muted-foreground">{GRAPH_HINT}</p>
@@ -646,6 +657,7 @@ export function MemoryPage() {
   // The memory open in the drawer; it stays mounted while the drawer slides out.
   const [selected, setSelected] = useState<string | null>(null);
   const [drawerOpen, setDrawerOpen] = useState(false);
+  const drawerRef = useRef<HTMLElement>(null);
   const [showMentions, setShowMentions] = useState(true);
   // Bumped to read the open memory again.
   const [version, setVersion] = useState(0);
@@ -752,6 +764,8 @@ export function MemoryPage() {
         onSelect={open}
         showMentions={showMentions}
         onShowMentions={setShowMentions}
+        drawerRef={drawerRef}
+        drawerOpen={drawerOpen && selected !== null}
       />
     );
   } else {
@@ -826,7 +840,12 @@ export function MemoryPage() {
           {content}
         </div>
       </div>
-      <Drawer open={drawerOpen && selected !== null} modal={tab === "table"} onClose={close}>
+      <Drawer
+        open={drawerOpen && selected !== null}
+        modal={tab === "table"}
+        onClose={close}
+        asideRef={drawerRef}
+      >
         {selected === null || titledGraph === undefined ? null : (
           <MemoryDetail
             key={selected}

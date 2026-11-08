@@ -33,8 +33,10 @@ A **Memory** page in the sidebar (`/plugins/memory-explorer/memory`):
   to release it. A relation is an arrow labelled with its type (`member of`,
   `led to`): the labels show for the memory you point at or open, and for every
   relation once you zoom in or the graph is small. Dashed lines are mentions.
-  When two memories link both ways, the two lines bend apart. Unconnected
-  entities and broken links are listed below the canvas.
+  When two memories link both ways, the two lines bend apart. A memory opened
+  from the graph shows in the drawer beside it: the zoom buttons move clear of
+  the drawer, and a memory under it is panned into view. Unconnected entities
+  and broken links are listed below the canvas.
 - **Preferences** of kind `preference` tagged `unconfirmed` get **Confirm**
   (removes the tag) and **Discard** (deletes the memory).
 
