@@ -17,6 +17,6 @@ A memory named `<type>.<slug>`, of kind `reference` and tagged `entity` and its 
 
 ## Requirements
 
-BB 0.48 or later, with the bundled Memory plugin enabled. Memory Explorer stores nothing of its own: it reads and writes memories through the Memory plugin. The page does not watch memory for changes: press **Refresh** to read it again.
+BB 0.48 or later, and BB's own Memory plugin, which ships with BB but is not installed by default: install **Memory** from the plugin store first. Memory Explorer stores nothing of its own: it reads and writes memories through the Memory plugin. The page does not watch memory for changes: press **Refresh** to read it again.
 
 Source and format details: https://github.com/d-asensio/bb-plugin-memory-explorer

@@ -12,9 +12,10 @@ From the plugin store in bb, or from this repository:
 bb plugin install git:https://github.com/d-asensio/bb-plugin-memory-explorer.git@^0.1.0
 ```
 
-It needs BB 0.48 or later with the bundled Memory plugin enabled. Memory
-Explorer stores nothing of its own: it reads and writes memories through the
-Memory plugin's RPC.
+It needs BB 0.48 or later and BB's own Memory plugin, which ships with BB but
+is not installed by default (`bb plugin install memory`, or **Memory** in the
+plugin store). Memory Explorer stores nothing of its own: it reads and writes
+memories through the Memory plugin's RPC.
 
 ## What it shows
 
